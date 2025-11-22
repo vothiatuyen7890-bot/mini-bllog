@@ -4,56 +4,54 @@ from werkzeug.utils import secure_filename
 import smtplib, ssl
 import psycopg2
 from urllib.parse import urlparse
+import psycopg2.extras # Thư viện cần thiết cho DictCursor
 
 app = Flask(__name__)
 app.secret_key = "secret123"
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# ----------------------------------------------------------------------
+# HÀM KẾT NỐI DATABASE CHUNG
+# ----------------------------------------------------------------------
+
 def get_db():
-    # Lấy DATABASE_URL từ Biến Môi trường của Render
     db_url = os.environ.get('DATABASE_URL')
+    
     if db_url:
         # === KẾT NỐI VỚI POSTGRESQL (Môi trường Render) ===
         try:
-            # Phân tích URL để lấy thông tin kết nối
             result = urlparse(db_url)
-            username = result.username
-            password = result.password
-            database = result.path[1:]
-            hostname = result.hostname
-            port = result.port
-
-            # Kết nối bằng psycopg2
             conn = psycopg2.connect(
-                database=database,
-                user=username,
-                password=password,
-                host=hostname,
-                port=port
+                database=result.path[1:],
+                user=result.username,
+                password=result.password,
+                host=result.hostname,
+                port=result.port
             )
-            # Tùy chỉnh để có thể truy cập cột bằng tên (giống sqlite3.Row)
-            conn.row_factory = psycopg2.extras.DictCursor # Sẽ phức tạp hơn
-
+            # Khác biệt: Trả về đối tượng kết nối thô
+            return conn
+            
         except Exception as e:
             print(f"Lỗi kết nối PostgreSQL: {e}")
-            # Nếu có lỗi, bạn nên xử lý lỗi ở đây, ví dụ: raise Exception(e)
             return None
-
+            
     else:
         # === KẾT NỐI VỚI SQLITE (Môi trường local/dev) ===
         conn = sqlite3.connect("database.db")
         conn.row_factory = sqlite3.Row
+        return conn
 
-    return conn
-    # BỔ SUNG: Khởi tạo database tự động khi ứng dụng khởi động
+# ----------------------------------------------------------------------
+# HÀM KHỞI TẠO DATABASE TỰ ĐỘNG (Được gọi khi Gunicorn khởi động)
+# ----------------------------------------------------------------------
 
 def init_app_db(conn):
-    # Hàm này sẽ được gọi ở cuối file để tạo bảng nếu chúng chưa tồn tại
-    if conn:
+    if conn and os.environ.get('DATABASE_URL'): # Chỉ chạy cho PostgreSQL trên Render
         try:
             cursor = conn.cursor()
-            # Thử tạo bảng USERS (PostgreSQL)
+            
+            # TẠO BẢNG USERS (PostgreSQL)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -61,7 +59,8 @@ def init_app_db(conn):
                     password TEXT NOT NULL
                 );
             """)
-            # Thử tạo bảng POSTS (PostgreSQL)
+            
+            # TẠO BẢNG POSTS (PostgreSQL)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS posts (
                     id SERIAL PRIMARY KEY,
@@ -69,24 +68,17 @@ def init_app_db(conn):
                     content TEXT NOT NULL
                 );
             """)
+            
             conn.commit()
             cursor.close()
-            print(">>> Khởi tạo/Kiểm tra bảng database thành công.")
+            print(">>> Khởi tạo/Kiểm tra bảng PostgreSQL thành công.")
         except Exception as e:
             print(f"LỖI KHỞI TẠO BẢNG: {e}")
-    else:
-        print("LỖI: Không thể khởi tạo database vì kết nối thất bại.")
+            conn.rollback()
 
-
-# ... (các hàm @app.route() của bạn) ...
-
-
-# GỌI HÀM KHỞI TẠO CUỐI FILE (Sau khi app được định nghĩa)
-if __name__ != '__main__': # Đảm bảo chỉ chạy khi Gunicorn khởi động (không chạy khi bạn chạy local)
-    db_connection = get_db()
-    if db_connection:
-        init_app_db(db_connection)
-        db_connection.close()
+# ----------------------------------------------------------------------
+# CÁC ROUTE VÀ LOGIC ỨNG DỤNG
+# ----------------------------------------------------------------------
 
 @app.route("/")
 def index():
@@ -99,11 +91,31 @@ def register():
         password = request.form["password"]
 
         conn = get_db()
-        conn.execute("INSERT INTO users(username, password) VALUES(?,?)", (username, password))
-        conn.commit()
+        if conn is None:
+            return "Internal Server Error: Database Connection Failed.", 500
 
-        send_email(f"New user registered: {username}")
-        return redirect("/login")
+        try:
+            if os.environ.get('DATABASE_URL'):
+                # PostgreSQL: Dùng con trỏ và placeholder %s
+                cur = conn.cursor()
+                cur.execute("INSERT INTO users(username, password) VALUES(%s, %s)", (username, password))
+                cur.close()
+            else:
+                # SQLite: Dùng conn.execute và placeholder ?
+                conn.execute("INSERT INTO users(username, password) VALUES(?,?)", (username, password))
+            
+            conn.commit()
+            send_email(f"New user registered: {username}")
+            return redirect("/login")
+        
+        except Exception as e:
+            print(f"LỖI ĐĂNG KÝ: {e}")
+            conn.rollback()
+            return "Internal Server Error: Database Query Failed.", 500
+        finally:
+            if conn:
+                conn.close()
+
     return render_template("register.html")
 
 @app.route("/login", methods=["GET", "POST"])
@@ -113,10 +125,27 @@ def login():
         password = request.form["password"]
 
         conn = get_db()
-        user = conn.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password)).fetchone()
+        if conn is None:
+            return "Internal Server Error: Database Connection Failed.", 500
+
+        user = None
+        try:
+            if os.environ.get('DATABASE_URL'):
+                # PostgreSQL: Dùng DictCursor để lấy kết quả bằng tên cột và placeholder %s
+                cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+                cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
+                user = cur.fetchone()
+                cur.close()
+            else:
+                # SQLite: Dùng conn.execute và placeholder ?
+                user = conn.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password)).fetchone()
+            
+        finally:
+            if conn:
+                conn.close()
 
         if user:
-            session["user"] = username
+            session["user"] = user['username'] # Dùng tên cột 'username'
             return redirect("/dashboard")
         else:
             return "Sai tài khoản hoặc mật khẩu!"
@@ -128,32 +157,81 @@ def dashboard():
         return redirect("/login")
 
     conn = get_db()
-    user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if conn is None:
+        return "Internal Server Error: Database Connection Failed.", 500
+        
+    user_count = 0
+    try:
+        if os.environ.get('DATABASE_URL'):
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM users")
+            user_count = cur.fetchone()[0]
+            cur.close()
+        else:
+            user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    finally:
+        conn.close()
+        
     file_count = len(os.listdir("uploads"))
     return render_template("dashboard.html", users=user_count, files=file_count)
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
+    # ... (Logic upload giữ nguyên, không liên quan đến database) ...
     if request.method == "POST":
         file = request.files["file"]
         filename = secure_filename(file.filename)
-        file.save(os.path.join(UPLOAD_FOLDER, filename))
+        # CHÚ Ý: Thư mục 'uploads' trên Render cũng là tạm thời và sẽ bị xóa khi khởi động lại.
+        file.save(os.path.join(UPLOAD_FOLDER, filename)) 
         return "Upload thành công!"
     return render_template("upload.html")
 
 @app.route("/api/posts", methods=["GET"])
 def api_get_posts():
     conn = get_db()
-    posts = conn.execute("SELECT * FROM posts").fetchall()
+    if conn is None:
+        return jsonify({"error": "Database Connection Failed"}), 500
+
+    posts = []
+    try:
+        if os.environ.get('DATABASE_URL'):
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cur.execute("SELECT * FROM posts")
+            posts = cur.fetchall()
+            cur.close()
+        else:
+            posts = conn.execute("SELECT * FROM posts").fetchall()
+    finally:
+        conn.close()
+
+    # Chuyển đổi kết quả từ psycopg2.extras.DictRow hoặc sqlite3.Row thành dict
     return jsonify([dict(row) for row in posts])
 
 @app.route("/api/posts", methods=["POST"])
 def api_add_post():
     data = request.json
     conn = get_db()
-    conn.execute("INSERT INTO posts(title, content) VALUES(?,?)", (data["title"], data["content"]))
-    conn.commit()
-    return jsonify({"message": "Added"})
+    if conn is None:
+        return jsonify({"error": "Database Connection Failed"}), 500
+
+    try:
+        if os.environ.get('DATABASE_URL'):
+            cur = conn.cursor()
+            # Dùng %s cho PostgreSQL
+            cur.execute("INSERT INTO posts(title, content) VALUES(%s, %s)", (data["title"], data["content"]))
+            cur.close()
+        else:
+            # Dùng ? cho SQLite
+            conn.execute("INSERT INTO posts(title, content) VALUES(?,?)", (data["title"], data["content"]))
+            
+        conn.commit()
+        return jsonify({"message": "Added"})
+    except Exception as e:
+        print(f"LỖI API POST: {e}")
+        conn.rollback()
+        return jsonify({"error": "Failed to add post"}), 500
+    finally:
+        conn.close()
 
 def send_email(msg):
     sender = os.getenv("EMAIL")
@@ -164,4 +242,11 @@ def send_email(msg):
         s.login(sender, password)
         s.sendmail(sender, to, msg)
 
-
+# ----------------------------------------------------------------------
+# CHẠY KHỞI TẠO DATABASE (Đảm bảo chỉ gọi 1 lần khi Gunicorn khởi động)
+# ----------------------------------------------------------------------
+if __name__ != '__main__':
+    db_connection = get_db()
+    if db_connection:
+        init_app_db(db_connection)
+        db_connection.close()

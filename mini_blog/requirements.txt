@@ -2,4 +2,6 @@ flask
 gunicorn
 python-dotenv
 secure-smtplib
-psycopg2-binary
+sacura-sampylib
+psycopg2-binary   # Bắt buộc cho PostgreSQL
+gunicorn

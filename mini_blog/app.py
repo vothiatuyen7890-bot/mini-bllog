@@ -2,6 +2,8 @@ from flask import Flask, render_template, request, redirect, session, url_for, j
 import sqlite3, os
 from werkzeug.utils import secure_filename
 import smtplib, ssl
+import psycopg2
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 app.secret_key = "secret123"
@@ -9,8 +11,40 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def get_db():
-    conn = sqlite3.connect("database.db")
-    conn.row_factory = sqlite3.Row
+    # Lấy DATABASE_URL từ Biến Môi trường của Render
+    db_url = os.environ.get('DATABASE_URL')
+    if db_url:
+        # === KẾT NỐI VỚI POSTGRESQL (Môi trường Render) ===
+        try:
+            # Phân tích URL để lấy thông tin kết nối
+            result = urlparse(db_url)
+            username = result.username
+            password = result.password
+            database = result.path[1:]
+            hostname = result.hostname
+            port = result.port
+
+            # Kết nối bằng psycopg2
+            conn = psycopg2.connect(
+                database=database,
+                user=username,
+                password=password,
+                host=hostname,
+                port=port
+            )
+            # Tùy chỉnh để có thể truy cập cột bằng tên (giống sqlite3.Row)
+            conn.row_factory = psycopg2.extras.DictCursor # Sẽ phức tạp hơn
+
+        except Exception as e:
+            print(f"Lỗi kết nối PostgreSQL: {e}")
+            # Nếu có lỗi, bạn nên xử lý lỗi ở đây, ví dụ: raise Exception(e)
+            return None
+
+    else:
+        # === KẾT NỐI VỚI SQLITE (Môi trường local/dev) ===
+        conn = sqlite3.connect("database.db")
+        conn.row_factory = sqlite3.Row
+
     return conn
 
 @app.route("/")

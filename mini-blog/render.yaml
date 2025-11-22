@@ -3,5 +3,5 @@ services:
     name: mini-blog
     env: python
     startCommand: gunicorn app:app
-    buildCommand: pip install -r **<tên_thư_mục>/requirements.txt**
+   buildCommand: pip install flask python-dotenv secure-smtplib
     plan: free

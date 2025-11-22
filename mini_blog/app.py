@@ -46,6 +46,47 @@ def get_db():
         conn.row_factory = sqlite3.Row
 
     return conn
+    # BỔ SUNG: Khởi tạo database tự động khi ứng dụng khởi động
+
+def init_app_db(conn):
+    # Hàm này sẽ được gọi ở cuối file để tạo bảng nếu chúng chưa tồn tại
+    if conn:
+        try:
+            cursor = conn.cursor()
+            # Thử tạo bảng USERS (PostgreSQL)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL
+                );
+            """)
+            # Thử tạo bảng POSTS (PostgreSQL)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS posts (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL
+                );
+            """)
+            conn.commit()
+            cursor.close()
+            print(">>> Khởi tạo/Kiểm tra bảng database thành công.")
+        except Exception as e:
+            print(f"LỖI KHỞI TẠO BẢNG: {e}")
+    else:
+        print("LỖI: Không thể khởi tạo database vì kết nối thất bại.")
+
+
+# ... (các hàm @app.route() của bạn) ...
+
+
+# GỌI HÀM KHỞI TẠO CUỐI FILE (Sau khi app được định nghĩa)
+if __name__ != '__main__': # Đảm bảo chỉ chạy khi Gunicorn khởi động (không chạy khi bạn chạy local)
+    db_connection = get_db()
+    if db_connection:
+        init_app_db(db_connection)
+        db_connection.close()
 
 @app.route("/")
 def index():

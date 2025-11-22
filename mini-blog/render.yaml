@@ -2,7 +2,7 @@ services:
   - type: web
     name: mini-blog
     env: python
-    startCommand: gunicorn --bind 0.0.0.0:10000 app:app
+    startCommand: gunicorn --chdir /path/to/app app:app
     buildCommand: pip install flask python-dotenv secure-smtplib
     plan: free
 

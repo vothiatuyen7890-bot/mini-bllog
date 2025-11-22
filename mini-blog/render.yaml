@@ -3,7 +3,7 @@ services:
     name: mini-blog
     env: python
     startCommand: gunicorn app:app
-    buildCommand: pip install flask python-dotenv secure-smtplib # DÒNG MỚI
+    buildCommand: pip install flask python-dotenv secure-smtplib
     plan: free
 
 cronJobs:

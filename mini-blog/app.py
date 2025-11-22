@@ -89,5 +89,4 @@ def send_email(msg):
         s.login(sender, password)
         s.sendmail(sender, to, msg)
 
-if __name__ == "__main__":
-    app.run()
+

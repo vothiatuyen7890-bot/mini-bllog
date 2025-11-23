@@ -29,7 +29,6 @@ def get_db():
                 host=result.hostname,
                 port=result.port
             )
-            # Khác biệt: Trả về đối tượng kết nối thô
             return conn
             
         except Exception as e:
@@ -43,11 +42,11 @@ def get_db():
         return conn
 
 # ----------------------------------------------------------------------
-# HÀM KHỞI TẠO DATABASE TỰ ĐỘNG (Được gọi khi Gunicorn khởi động)
+# HÀM KHỞI TẠO DATABASE TỰ ĐỘNG
 # ----------------------------------------------------------------------
 
 def init_app_db(conn):
-    if conn and os.environ.get('DATABASE_URL'): # Chỉ chạy cho PostgreSQL trên Render
+    if conn and os.environ.get('DATABASE_URL'):
         try:
             cursor = conn.cursor()
             
@@ -105,9 +104,11 @@ def register():
                 conn.execute("INSERT INTO users(username, password) VALUES(?,?)", (username, password))
             
             conn.commit()
-            send_email(f"New user registered: {username}")
+            
+            # ⚠️ ĐÃ KHÓA: send_email(f"New user registered: {username}") 
+            
             return redirect("/login")
-        
+            
         except Exception as e:
             print(f"LỖI ĐĂNG KÝ: {e}")
             conn.rollback()
@@ -145,7 +146,7 @@ def login():
                 conn.close()
 
         if user:
-            session["user"] = user['username'] # Dùng tên cột 'username'
+            session["user"] = user['username']
             return redirect("/dashboard")
         else:
             return "Sai tài khoản hoặc mật khẩu!"
@@ -170,18 +171,17 @@ def dashboard():
         else:
             user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     finally:
-        conn.close()
+        if conn:
+            conn.close()
         
     file_count = len(os.listdir("uploads"))
     return render_template("dashboard.html", users=user_count, files=file_count)
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
-    # ... (Logic upload giữ nguyên, không liên quan đến database) ...
     if request.method == "POST":
         file = request.files["file"]
         filename = secure_filename(file.filename)
-        # CHÚ Ý: Thư mục 'uploads' trên Render cũng là tạm thời và sẽ bị xóa khi khởi động lại.
         file.save(os.path.join(UPLOAD_FOLDER, filename)) 
         return "Upload thành công!"
     return render_template("upload.html")
@@ -202,9 +202,9 @@ def api_get_posts():
         else:
             posts = conn.execute("SELECT * FROM posts").fetchall()
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
-    # Chuyển đổi kết quả từ psycopg2.extras.DictRow hoặc sqlite3.Row thành dict
     return jsonify([dict(row) for row in posts])
 
 @app.route("/api/posts", methods=["POST"])
@@ -217,11 +217,9 @@ def api_add_post():
     try:
         if os.environ.get('DATABASE_URL'):
             cur = conn.cursor()
-            # Dùng %s cho PostgreSQL
             cur.execute("INSERT INTO posts(title, content) VALUES(%s, %s)", (data["title"], data["content"]))
             cur.close()
         else:
-            # Dùng ? cho SQLite
             conn.execute("INSERT INTO posts(title, content) VALUES(?,?)", (data["title"], data["content"]))
             
         conn.commit()
@@ -231,19 +229,25 @@ def api_add_post():
         conn.rollback()
         return jsonify({"error": "Failed to add post"}), 500
     finally:
-        conn.close()
-
-def send_email(msg):
-    sender = os.getenv("EMAIL")
-    password = os.getenv("EMAIL_PASS")
-    to = os.getenv("EMAIL")
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as s:
-        s.login(sender, password)
-        s.sendmail(sender, to, msg)
+        if conn:
+            conn.close()
 
 # ----------------------------------------------------------------------
-# CHẠY KHỞI TẠO DATABASE (Đảm bảo chỉ gọi 1 lần khi Gunicorn khởi động)
+# HÀM GỬI EMAIL (ĐÃ KHÓA)
+# ----------------------------------------------------------------------
+def send_email(msg):
+    # Chúng ta vô hiệu hóa hàm này để khắc phục lỗi Internal Server Error
+    # sender = os.getenv("EMAIL")
+    # password = os.getenv("EMAIL_PASS")
+    # to = os.getenv("EMAIL")
+    # context = ssl.create_default_context()
+    # with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as s:
+    #     s.login(sender, password)
+    #     s.sendmail(sender, to, msg)
+    pass # Lệnh này đảm bảo hàm không làm gì
+
+# ----------------------------------------------------------------------
+# CHẠY KHỞI TẠO DATABASE
 # ----------------------------------------------------------------------
 if __name__ != '__main__':
     db_connection = get_db()
